@@ -206,8 +206,8 @@ if __name__ == '__main__':
     print("="*60)
     print("Starting Crop Disease Prediction Demo Server")
     print("="*60)
-    print("\nOpen your browser and go to: http://localhost:5000")
+    print("\nOpen your browser and go to: http://localhost:8080")
     print("Press Ctrl+C to stop the server\n")
     
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=8080, debug=False)
 
