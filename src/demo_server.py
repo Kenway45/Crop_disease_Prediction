@@ -79,8 +79,13 @@ def load_models():
     
     print("Loading models...")
     
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Device - Use MPS (Apple GPU) if available
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
     print(f"Using device: {device}")
     
     # Load class names
