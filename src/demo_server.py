@@ -15,6 +15,13 @@ from PIL import Image
 from flask import Flask, render_template, request, jsonify
 import joblib
 
+# Import quantum classifier
+try:
+    from quantum_classifier import QuantumClassifier
+    QUANTUM_AVAILABLE = True
+except ImportError:
+    QUANTUM_AVAILABLE = False
+
 # Define the CNN model (must match training)
 class CropDiseaseCNN(nn.Module):
     """CNN model for crop disease classification."""
@@ -66,13 +73,14 @@ app = Flask(__name__,
 model = None
 pca = None
 classifier = None
+quantum_classifier = None
 class_names = []
 device = None
 transform = None
 
 def load_models():
     """Load all model artifacts."""
-    global model, pca, classifier, class_names, device, transform
+    global model, pca, classifier, quantum_classifier, class_names, device, transform
     
     project_root = Path(__file__).parent.parent
     artifacts_dir = project_root / 'artifacts'
@@ -109,6 +117,22 @@ def load_models():
     classifier = joblib.load(artifacts_dir / 'classifiers' / 'lr_clf.joblib')
     print("✓ Loaded classifier")
     
+    # Load Quantum Classifier (optional)
+    quantum_clf_path = artifacts_dir / 'classifiers' / 'quantum_clf.joblib'
+    if QUANTUM_AVAILABLE and quantum_clf_path.exists():
+        try:
+            quantum_classifier = QuantumClassifier.load(quantum_clf_path)
+            print("✓ Loaded quantum classifier 🔮")
+        except Exception as e:
+            print(f"⚠️  Failed to load quantum classifier: {e}")
+            quantum_classifier = None
+    else:
+        quantum_classifier = None
+        if not QUANTUM_AVAILABLE:
+            print("ℹ️  Quantum classifier not available (install pennylane)")
+        else:
+            print("ℹ️  Quantum classifier not found (train with quantum support)")
+    
     # Image transform
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -118,9 +142,47 @@ def load_models():
     
     print("\n✓ All models loaded successfully!\n")
 
+def is_leaf_image(image):
+    """
+    Detect if image contains a leaf using color and texture analysis.
+    
+    Args:
+        image: PIL Image
+    
+    Returns:
+        bool: True if leaf detected, False otherwise
+    """
+    import numpy as np
+    from PIL import ImageStat
+    
+    # Convert to RGB array
+    img_array = np.array(image)
+    
+    # Calculate green channel dominance
+    r, g, b = img_array[:,:,0], img_array[:,:,1], img_array[:,:,2]
+    
+    # Leaves typically have more green
+    green_ratio = np.mean(g) / (np.mean(r) + np.mean(g) + np.mean(b) + 1e-6)
+    
+    # Calculate color variance (leaves have some texture)
+    stats = ImageStat.Stat(image)
+    variance = np.mean(stats.var)
+    
+    # Heuristics for leaf detection
+    is_green_dominant = green_ratio > 0.30  # At least 30% green
+    has_texture = variance > 100  # Some texture/variation
+    not_too_uniform = variance < 10000  # Not completely random
+    
+    # Check brightness (not too dark, not too bright)
+    brightness = np.mean(img_array)
+    reasonable_brightness = 30 < brightness < 240
+    
+    return is_green_dominant and has_texture and not_too_uniform and reasonable_brightness
+
 def predict_image(image):
     """
-    Predict disease from image.
+    Predict disease from image using PURE QUANTUM + PCA pipeline.
+    Rejects non-leaf images.
     
     Args:
         image: PIL Image
@@ -128,37 +190,84 @@ def predict_image(image):
     Returns:
         dict with prediction results
     """
-    # Transform image
+    # STEP 1: Leaf Detection
+    if not is_leaf_image(image):
+        return {
+            'error': 'No leaf detected',
+            'message': '🍃 Please capture an image of a plant leaf',
+            'is_leaf': False,
+            'quantum_available': False
+        }
+    
+    # STEP 2: Extract features (CNN + PCA)
     img_tensor = transform(image).unsqueeze(0).to(device)
     
-    # Extract embeddings
     with torch.no_grad():
         embeddings = model.get_embeddings(img_tensor)
         embeddings = embeddings.cpu().numpy()
     
-    # Apply PCA
+    # Apply PCA (critical for quantum!)
     embeddings_pca = pca.transform(embeddings)
     
-    # Predict with classifier
-    prediction = classifier.predict(embeddings_pca)[0]
-    probabilities = classifier.predict_proba(embeddings_pca)[0]
+    # STEP 3: Pure Quantum Prediction
+    if quantum_classifier is None:
+        return {
+            'error': 'Quantum classifier not available',
+            'message': 'Please train quantum model first: python train_quantum_only.py',
+            'is_leaf': True,
+            'quantum_available': False
+        }
     
-    # Get top 3 predictions
-    top_indices = np.argsort(probabilities)[-3:][::-1]
-    
-    results = {
-        'prediction': class_names[prediction],
-        'confidence': float(probabilities[prediction]),
-        'top_predictions': [
-            {
-                'class': class_names[idx],
-                'confidence': float(probabilities[idx])
+    try:
+        # Pure quantum prediction
+        quantum_probabilities = quantum_classifier.predict_proba(embeddings_pca)[0]
+        quantum_prediction = int(np.argmax(quantum_probabilities))
+        
+        # Get top 3 quantum predictions
+        quantum_top_indices = np.argsort(quantum_probabilities)[-3:][::-1]
+        
+        # Calculate confidence threshold
+        max_confidence = float(quantum_probabilities[quantum_prediction])
+        
+        # Check if prediction is confident enough
+        if max_confidence < 0.3:  # Low confidence
+            return {
+                'warning': 'Low confidence prediction',
+                'message': '⚠️ Image quality may be poor. Please try a clearer image of the leaf.',
+                'prediction': class_names[quantum_prediction],
+                'confidence': max_confidence,
+                'is_leaf': True,
+                'quantum_available': True
             }
-            for idx in top_indices
-        ]
-    }
-    
-    return results
+        
+        # Return pure quantum results
+        results = {
+            'prediction': class_names[quantum_prediction],
+            'confidence': max_confidence,
+            'is_leaf': True,
+            'quantum_available': True,
+            'method': 'Pure Quantum (PCA + 8-qubit VQC)',
+            'quantum_prediction': class_names[quantum_prediction],
+            'quantum_confidence': max_confidence,
+            'top_predictions': [
+                {
+                    'class': class_names[idx],
+                    'confidence': float(quantum_probabilities[idx])
+                }
+                for idx in quantum_top_indices
+            ]
+        }
+        
+        return results
+        
+    except Exception as e:
+        print(f"Quantum prediction failed: {e}")
+        return {
+            'error': 'Prediction failed',
+            'message': f'Error: {str(e)}',
+            'is_leaf': True,
+            'quantum_available': False
+        }
 
 @app.route('/')
 def index():

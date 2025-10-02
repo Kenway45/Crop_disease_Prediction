@@ -21,6 +21,14 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import quantum classifier
+try:
+    from quantum_classifier import QuantumClassifier
+    QUANTUM_AVAILABLE = True
+except ImportError:
+    QUANTUM_AVAILABLE = False
+    print("⚠️  Quantum classifier not available. Install pennylane to enable quantum features.")
+
 # Set random seeds for reproducibility
 torch.manual_seed(42)
 np.random.seed(42)
@@ -367,6 +375,78 @@ def main():
     
     joblib.dump(clf, artifacts_dir / 'classifiers' / 'lr_clf.joblib')
     print(f"✓ Classifier saved to artifacts/classifiers/lr_clf.joblib")
+    
+    # Train Quantum Classifier
+    if QUANTUM_AVAILABLE:
+        print("\n" + "="*60)
+        print("STEP 6: Training Quantum Classifier 🔮")
+        print("="*60)
+        
+        try:
+            # Use a subset for quantum training (quantum is slower)
+            # Sample balanced subset
+            max_samples_per_class = 100  # Adjust based on your compute power
+            quantum_indices = []
+            
+            for class_label in range(num_classes):
+                class_indices = np.where(emb_labels == class_label)[0]
+                n_samples = min(len(class_indices), max_samples_per_class)
+                sampled = np.random.choice(class_indices, n_samples, replace=False)
+                quantum_indices.extend(sampled)
+            
+            quantum_indices = np.array(quantum_indices)
+            np.random.shuffle(quantum_indices)
+            
+            X_quantum = embeddings_pca[quantum_indices]
+            y_quantum = emb_labels[quantum_indices]
+            
+            print(f"\nUsing {len(X_quantum)} samples for quantum training")
+            print(f"(Sampled {max_samples_per_class} per class for efficiency)\n")
+            
+            # Split quantum data
+            X_train_quantum, X_test_quantum, y_train_quantum, y_test_quantum = train_test_split(
+                X_quantum, y_quantum, test_size=0.2, random_state=42, stratify=y_quantum
+            )
+            
+            # Initialize quantum classifier
+            quantum_clf = QuantumClassifier(
+                n_features=PCA_COMPONENTS,
+                n_classes=num_classes,
+                n_qubits=8,
+                n_layers=4
+            )
+            
+            # Train quantum classifier
+            quantum_clf.fit(
+                X_train_quantum, 
+                y_train_quantum,
+                epochs=30,
+                batch_size=16,
+                learning_rate=0.01,
+                verbose=True
+            )
+            
+            # Evaluate quantum classifier
+            quantum_train_acc = quantum_clf.score(X_train_quantum, y_train_quantum)
+            quantum_test_acc = quantum_clf.score(X_test_quantum, y_test_quantum)
+            
+            print(f"\n✓ Quantum Classifier trained")
+            print(f"  Train accuracy: {quantum_train_acc*100:.2f}%")
+            print(f"  Test accuracy: {quantum_test_acc*100:.2f}%")
+            
+            # Save quantum classifier
+            quantum_clf.save(artifacts_dir / 'classifiers' / 'quantum_clf.joblib')
+            print(f"✓ Quantum classifier saved to artifacts/classifiers/quantum_clf.joblib")
+            
+        except Exception as e:
+            print(f"\n⚠️  Quantum training failed: {e}")
+            print("   Continuing without quantum classifier...")
+    else:
+        print("\n" + "="*60)
+        print("STEP 6: Quantum Classifier - SKIPPED")
+        print("="*60)
+        print("Install pennylane to enable quantum features:")
+        print("  pip install pennylane pennylane-lightning")
     
     # Final summary
     print("\n" + "="*60)
